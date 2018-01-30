@@ -34,33 +34,35 @@
 #include <fcntl.h>
 
 #define LOG_TAG "RKPowerHAL"
-#define DEBUG_EN 0
+#define DEBUG_EN 1
 #include <utils/Log.h>
 #include <cutils/properties.h>
 
 #include <hardware/hardware.h>
 #include <hardware/power.h>
 
-//#define DDR_BOOST_SUPPORT 1
+#define DDR_BOOST_SUPPORT 1
 #define BUFFER_LENGTH 128
 #define FREQ_LENGTH 10
 
+static bool low_power_mode = false;
+
+#define LOW_POWER_MAX_FREQ "126000"
+#define NORMAL_MAX_FREQ "1800000"
+
+//#define TOUCHSCREEN_POWER_PATH "/devices/platform/ff160000.i2c/i2c-4/4-0040/input"
+
+#define CPU_MAX_FREQ_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"
 #define CPU_CLUST0_GOV_PATH "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor"
 #define CPU_CLUST0_AVAIL_FREQ "/sys/devices/system/cpu/cpufreq/policy0/scaling_available_frequencies"
 #define CPU_CLUST0_SCAL_MAX_FREQ "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq"
 #define CPU_CLUST0_SCAL_MIN_FREQ "/sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq"
 #define CPU_CLUST0_BOOSTPULSE_PATH "/sys/devices/system/cpu/cpufreq/policy0/interactive/boostpulse"
 
-#define CPU_CLUST1_GOV_PATH "/sys/devices/system/cpu/cpufreq/policy4/scaling_governor"
-#define CPU_CLUST1_AVAIL_FREQ "/sys/devices/system/cpu/cpufreq/policy4/scaling_available_frequencies"
-#define CPU_CLUST1_SCAL_MAX_FREQ "/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq"
-#define CPU_CLUST1_SCAL_MIN_FREQ "/sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq"
-#define CPU_CLUST1_BOOSTPULSE_PATH "/sys/devices/system/cpu/cpufreq/policy4/interactive/boostpulse"
-
-#define GPU_GOV_PATH "/sys/class/devfreq/ff9a0000.gpu/governor"
-#define GPU_AVAIL_FREQ "/sys/class/devfreq/ff9a0000.gpu/available_frequencies"
-#define GPU_MIN_FREQ "/sys/class/devfreq/ff9a0000.gpu/min_freq"
-#define GPU_MAX_FREQ "/sys/class/devfreq/ff9a0000.gpu/max_freq"
+#define GPU_GOV_PATH "/sys/class/devfreq/ffa30000.gpu/governor"
+#define GPU_AVAIL_FREQ "/sys/class/devfreq/ffa30000.gpu/available_frequencies"
+#define GPU_MIN_FREQ "/sys/class/devfreq/ffa30000.gpu/min_freq"
+#define GPU_MAX_FREQ "/sys/class/devfreq/ffa30000.gpu/max_freq"
 
 #ifdef DDR_BOOST_SUPPORT
 #define DDR_SCENE_PATH "/sys/class/devfreq/dmc/system_status"
@@ -68,8 +70,6 @@
 
 static char cpu_clust0_available_freqs[FREQ_LENGTH][FREQ_LENGTH];
 static unsigned int cpu_clust0_max_index = 0;
-static char cpu_clust1_available_freqs[FREQ_LENGTH][FREQ_LENGTH];
-static unsigned int cpu_clust1_max_index = 0;
 static char gpu_available_freqs[FREQ_LENGTH][FREQ_LENGTH];
 static unsigned int gpu_max_index = 0;
 
@@ -114,26 +114,6 @@ static void cpu_clus0_boost(int max, int min )
     }
 }
 
-/*************** Modify cpu clust1 scaling max && min freq for interactive mode **********************/
-static void cpu_clus1_boost(int max, int min )
-{
-    if(DEBUG_EN)ALOGI("RK cpu_clus1_boost Entered!");
-
-    if(max>=0 && max<=cpu_clust1_max_index && *cpu_clust1_available_freqs[max]>='0' && *cpu_clust1_available_freqs[max]<='9' ){
-        if(DEBUG_EN)ALOGI("cpu_clust1_available_freqs[%d]:%s",max,cpu_clust1_available_freqs[max]);
-        sysfs_write(CPU_CLUST1_SCAL_MAX_FREQ,cpu_clust1_available_freqs[max]);
-    } else {
-        ALOGE("Invalid max freq can not be set!");
-    }
-
-    if(min>=0 && min<=cpu_clust1_max_index && *cpu_clust1_available_freqs[min]>='0' && *cpu_clust1_available_freqs[min]<='9' ){
-        if(DEBUG_EN)ALOGI("cpu_clust1_available_freqs[%d]:%s",min,cpu_clust1_available_freqs[min]);
-        sysfs_write(CPU_CLUST1_SCAL_MIN_FREQ,cpu_clust1_available_freqs[min]);
-    } else {
-        ALOGE("Invalid min freq can not be set!");
-    }
-}
-
 /*************** Modify gpu max && min freq for simple_ondemand mode **********************/
 static void gpu_boost(int max, int min)
 {
@@ -164,9 +144,8 @@ static void touch_boost(int on)
 /************** Modify cpu gpu ddr to performance mode ************************/
 static void performance_boost(int on)
 {
-    if(DEBUG_EN)ALOGI("RK performance_boost Entered!");
+    if(DEBUG_EN)ALOGI("RK performance_boost, on=%d", on);
     sysfs_write(CPU_CLUST0_GOV_PATH, on ? "performance" : "interactive");
-    sysfs_write(CPU_CLUST1_GOV_PATH, on ? "performance" : "interactive");
     sysfs_write(GPU_GOV_PATH,on ? "performance" : "simple_ondemand");
 #ifdef DDR_BOOST_SUPPORT
     sysfs_write(DDR_SCENE_PATH,on ? "p" : "n");
@@ -178,7 +157,6 @@ static void low_power_boost(int on)
 {
     if(DEBUG_EN)ALOGI("RK low_power_boost Entered!");
     sysfs_write(CPU_CLUST0_GOV_PATH, on ? "powersave" : "interactive");
-    sysfs_write(CPU_CLUST1_GOV_PATH, on ? "powersave" : "interactive");
     sysfs_write(GPU_GOV_PATH,on ? "powersave" : "simple_ondemand");
 #ifdef DDR_BOOST_SUPPORT
     sysfs_write(DDR_SCENE_PATH,on ? "l" : "L");
@@ -187,11 +165,10 @@ static void low_power_boost(int on)
 
 static void rk_power_init(struct power_module *module)
 {
-    if(DEBUG_EN)ALOGD("version 4.0\n");
+    if(DEBUG_EN)ALOGD("rk3288: power hal version 4.0\n");
 
     int fd,count,i=0;
     char cpu_clus0_freqs[BUFFER_LENGTH];
-    char cpu_clus1_freqs[BUFFER_LENGTH];
     char gpu_freqs[BUFFER_LENGTH] ;
     char*freq_split;
 
@@ -215,28 +192,6 @@ static void rk_power_init(struct power_module *module)
     }
     cpu_clust0_max_index = i-2;
     if(DEBUG_EN)ALOGI("cpu_clust0_max_index:%d\n",cpu_clust0_max_index);
-
-
-    /*********************** obtain cpu cluster1 available freqs **************************/
-    if(fd = open (CPU_CLUST1_AVAIL_FREQ,O_RDONLY)){
-        count = read(fd,cpu_clus1_freqs,sizeof(cpu_clus1_freqs)-1);
-        if(count < 0) ALOGE("Error reading from %s\n", CPU_CLUST1_AVAIL_FREQ);
-        else
-            cpu_clus1_freqs[count] = '\0';
-    } else {
-        ALOGE("Error to open %s\n", CPU_CLUST1_AVAIL_FREQ);
-    }
-    if(DEBUG_EN)ALOGI("cpu_clus1_freqs:%s\n",cpu_clus1_freqs);
-
-    freq_split = strtok(cpu_clus1_freqs," ");
-    strcpy(cpu_clust1_available_freqs[0],freq_split);
-    if(DEBUG_EN)ALOGI("cpu_clust1 available freq[0]:%s\n",cpu_clust1_available_freqs[0]);
-    for(i=1;freq_split=strtok(NULL," ");i++){
-        strcpy(cpu_clust1_available_freqs[i],freq_split);
-        if(DEBUG_EN)ALOGI("cpu_clust1 available freq[%d]:%s\n",i,cpu_clust1_available_freqs[i]);
-    }
-    cpu_clust1_max_index = i-2;
-    if(DEBUG_EN)ALOGI("cpu_clust1_max_index:%d\n",cpu_clust1_max_index);
 
     /*********************** obtain gpu available freqs **************************/
     if(fd = open (GPU_AVAIL_FREQ,O_RDONLY)){
@@ -269,6 +224,18 @@ static void rk_power_init(struct power_module *module)
 static void rk_power_set_interactive(struct power_module *module, int on)
 {
     /*************Add appropriate actions for specific platform && product type *****************/
+    if(DEBUG_EN)ALOGD("power_set_interactive: %d\n", on);
+
+    /*
+     * Lower maximum frequency when screen is off.
+     */
+    sysfs_write(CPU_MAX_FREQ_PATH,
+                (!on || low_power_mode) ? LOW_POWER_MAX_FREQ : NORMAL_MAX_FREQ);
+    //sysfs_write("/sys/devices/system/cpu/cpu1/online", on ? "1" : "0");
+    //sysfs_write("/sys/devices/system/cpu/cpu2/online", on ? "1" : "0");
+    //sysfs_write("/sys/devices/system/cpu/cpu3/online", on ? "1" : "0");
+    //sysfs_write(TOUCHSCREEN_POWER_PATH, on ? "1" : "0");
+    if(DEBUG_EN)ALOGD("power_set_interactive: %d done\n", on);
 }
 
 /*
@@ -307,7 +274,6 @@ static void rk_power_hint(struct power_module *module, power_hint_t hint, void *
             performance_boost(mode);
         }
         break;
-
     case POWER_HINT_PERFORMANCE:
         if(data!=NULL) {
             mode = *(int*)data;
